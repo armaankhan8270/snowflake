@@ -70,7 +70,7 @@ class CommonUI:
         st.markdown("### 🔍 Dashboard Filters")
         st.markdown("Easily refine your data by selecting specific time ranges or objects.")
 
-        with st.container(border=True): # Use a container for visual grouping and a subtle border
+        with st.container(border=True):
             col1, col2 = st.columns([1, 1])
 
             with col1:
@@ -87,7 +87,7 @@ class CommonUI:
                     "Custom Range": "custom",
                 }
                 
-                # Find the default index
+                # Find the default index for date filter
                 default_date_index = list(date_filter_options.values()).index(default_date_filter) \
                     if default_date_filter in list(date_filter_options.values()) else 1 # Default to 7 days if not found
 
@@ -105,28 +105,35 @@ class CommonUI:
 
                 if filters["date_filter"] == "custom":
                     current_end_date = datetime.now().date()
-                    # Calculate default start date for custom range to be 7 days prior
                     default_custom_start = current_end_date - timedelta(days=7)
+
+                    # Initialize custom date values in session state only if they don't exist
+                    # This prevents resetting values if user has already picked them
+                    if 'custom_start_date_val' not in st.session_state:
+                        st.session_state['custom_start_date_val'] = default_custom_start
+                    if 'custom_end_date_val' not in st.session_state:
+                        st.session_state['custom_end_date_val'] = current_end_date
 
                     custom_date_col1, custom_date_col2 = st.columns(2)
                     with custom_date_col1:
                         custom_start_date = st.date_input(
                             "Start date",
-                            value=st.session_state.get('custom_start_date_val', default_custom_start),
+                            value=st.session_state['custom_start_date_val'], # Read from session state
                             key="custom_start_date",
                             help="Select the beginning date for your custom range."
                         )
                     with custom_date_col2:
                         custom_end_date = st.date_input(
                             "End date",
-                            value=st.session_state.get('custom_end_date_val', current_end_date),
+                            value=st.session_state['custom_end_date_val'], # Read from session state
                             key="custom_end_date",
                             help="Select the end date for your custom range. Must be after start date."
                         )
                     
-                    # Store values in session state to persist across reruns for custom date picker
+                    # Update session state values after st.date_input returns (this is how date_input works)
                     st.session_state['custom_start_date_val'] = custom_start_date
                     st.session_state['custom_end_date_val'] = custom_end_date
+
 
                     # Basic validation for custom dates
                     if custom_start_date and custom_end_date and custom_start_date > custom_end_date:
@@ -141,6 +148,7 @@ class CommonUI:
                         filters["custom_end"] = custom_end_date
                 else:
                     # Clear custom date session state if not in custom mode
+                    # This avoids carrying over custom dates when switching to preset ranges
                     if 'custom_start_date_val' in st.session_state:
                         del st.session_state['custom_start_date_val']
                     if 'custom_end_date_val' in st.session_state:
@@ -167,6 +175,7 @@ class CommonUI:
                     "All Objects" # Default to "All Objects" if not found
                 )
                 
+                # The object_type_selector widget. Its value is now in st.session_state.object_type_selector
                 selected_object_type_label = st.selectbox(
                     "Filter by a specific object type:",
                     options=list(object_type_options.keys()),
@@ -197,21 +206,23 @@ class CommonUI:
                     
                     session_state_key = f"object_value_{filters['object_type']}_selector"
 
-                    # --- CRITICAL CORRECTION HERE ---
-                    # Determine the default value for the selectbox *before* instantiating it.
-                    # We want to preserve the user's previous selection if it's still valid,
-                    # otherwise default to 'All'.
-                    current_selected_object_value_in_state = st.session_state.get(session_state_key, "All")
-                    
-                    # If the value currently in session state for this key is not in the new options,
-                    # or if the object type has just changed, reset it to 'All'.
-                    if current_selected_object_value_in_state not in object_values:
+                    # --- CRITICAL RE-REFINEMENT HERE ---
+                    # 1. Check if the session state key exists.
+                    # 2. If it exists, check if its value is still valid in the current `object_values` list.
+                    # 3. If it doesn't exist OR it's not valid, *then* initialize/reset it to "All" (or a suitable default).
+                    # This must happen *before* the st.selectbox is called.
+
+                    if session_state_key not in st.session_state or \
+                       st.session_state[session_state_key] not in object_values:
                         # Initialize or reset the session state value *before* widget instantiation
                         st.session_state[session_state_key] = "All"
                     
-                    # Use the value from session state to find the correct index for the selectbox
+                    # Now, the session state value is guaranteed to be valid and initialized correctly.
+                    # Use the value from session state to find the correct index for the selectbox.
+                    # `st.session_state[session_state_key]` will now hold either "All"
+                    # or the user's previously selected, still valid, object.
                     default_index_for_selectbox = object_values.index(st.session_state[session_state_key])
-                    # --- END CRITICAL CORRECTION ---
+                    # --- END CRITICAL RE-REFINEMENT ---
 
                     selected_object_value = st.selectbox(
                         f"Select {filters['object_type']}:",
@@ -221,18 +232,23 @@ class CommonUI:
                         help=f"Select 'All' to view aggregated data, or choose a specific {filters['object_type']}."
                     )
                     
-                    # REMOVE THIS LINE:
-                    # st.session_state[session_state_key] = selected_object_value # This line caused the error!
-
+                    # Streamlit automatically updates st.session_state[session_state_key]
+                    # with selected_object_value on the *next* rerun.
+                    # So, we can directly read from it for the current `filters` dictionary.
                     filters["object_value"] = selected_object_value
-
-        
-        # Display current filters (optional, for debugging/user feedback)
-        # st.markdown(f"**Current Filters:** Date Range: `{filters['date_filter']}` ({filters.get('custom_start', 'N/A')} to {filters.get('custom_end', 'N/A') if filters['date_filter'] == 'custom' else datetime.now().date()}), Object: `{filters['object_type']}: {filters['object_value']}`")
-
-        return filters
-
-
+                else:
+                    # If object_type is 'all', ensure the object_value is 'All' and clear specific keys
+                    filters["object_value"] = "All"
+                    # Clean up specific object_value session state keys when 'All Objects' is selected
+                    for key in list(st.session_state.keys()):
+                        if key.startswith("object_value_") and key.endswith("_selector"):
+                            # Check if the key corresponds to the object_type that *was* selected
+                            # before switching to 'All Objects'. This is a bit tricky to manage perfectly.
+                            # For simplicity, we can just ensure the 'All' value is set for the current context.
+                            # A more robust solution might clear all previous object_value selectors,
+                            # but that could be complex if multiple selectors are used elsewhere.
+                            # For now, let's rely on the conditional initialization above.
+                            pass # No need to delete here, the init logic handles it
     def render_metric_grid(self, metrics: List[Dict[str, Any]], columns: int = 3):
         """
         Renders metrics in a responsive grid layout using Streamlit columns.
