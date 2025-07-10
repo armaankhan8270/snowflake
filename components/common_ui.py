@@ -195,23 +195,37 @@ class CommonUI:
                     if "All" not in object_values:
                         object_values.insert(0, "All")
                     
-                    # Determine initial value for selectbox based on session state or 'All'
                     session_state_key = f"object_value_{filters['object_type']}_selector"
-                    default_value_for_selectbox = st.session_state.get(session_state_key, "All")
-                    if default_value_for_selectbox not in object_values: # If previous selection is no longer valid
-                        default_value_for_selectbox = "All"
+
+                    # --- CRITICAL CORRECTION HERE ---
+                    # Determine the default value for the selectbox *before* instantiating it.
+                    # We want to preserve the user's previous selection if it's still valid,
+                    # otherwise default to 'All'.
+                    current_selected_object_value_in_state = st.session_state.get(session_state_key, "All")
                     
+                    # If the value currently in session state for this key is not in the new options,
+                    # or if the object type has just changed, reset it to 'All'.
+                    if current_selected_object_value_in_state not in object_values:
+                        # Initialize or reset the session state value *before* widget instantiation
+                        st.session_state[session_state_key] = "All"
+                    
+                    # Use the value from session state to find the correct index for the selectbox
+                    default_index_for_selectbox = object_values.index(st.session_state[session_state_key])
+                    # --- END CRITICAL CORRECTION ---
+
                     selected_object_value = st.selectbox(
                         f"Select {filters['object_type']}:",
                         options=object_values,
-                        index=object_values.index(default_value_for_selectbox),
-                        key=session_state_key, # Use a dynamic key based on object_type
+                        index=default_index_for_selectbox, # Use the correctly determined index
+                        key=session_state_key, # Streamlit will automatically update this session state key
                         help=f"Select 'All' to view aggregated data, or choose a specific {filters['object_type']}."
                     )
                     
-                    st.session_state[session_state_key] = selected_object_value # Persist selection
+                    # REMOVE THIS LINE:
+                    # st.session_state[session_state_key] = selected_object_value # This line caused the error!
 
                     filters["object_value"] = selected_object_value
+
         
         # Display current filters (optional, for debugging/user feedback)
         # st.markdown(f"**Current Filters:** Date Range: `{filters['date_filter']}` ({filters.get('custom_start', 'N/A')} to {filters.get('custom_end', 'N/A') if filters['date_filter'] == 'custom' else datetime.now().date()}), Object: `{filters['object_type']}: {filters['object_value']}`")
