@@ -96,7 +96,7 @@ class ChartRenderer:
 
             # Get final chart configuration including potential toggle overrides
             chart_final_config = self._get_chart_config(
-                query_config, current_toggle_option, chart_type, x_col, y_col, value_col, color_col, hover_data
+                query_config, current_toggle_option, chart_type, x_col, y_col,current_label, value_col, color_col, hover_data,
             )
 
             # Create chart figure
@@ -276,6 +276,7 @@ class ChartRenderer:
         chart_type: Optional[str] = None,
         x_col: Optional[str] = None,
         y_col: Optional[str] = None,
+        label: Optional[str] = None,
         value_col: Optional[str] = None, # New parameter
         color_col: Optional[str] = None, # New parameter
         hover_data: Optional[list] = None, # New parameter
