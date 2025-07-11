@@ -3,21 +3,25 @@
 """
 SQL query definitions for the User 360 Dashboard.
 These queries use placeholders for dynamic filtering:
-- {start_date}: For date range filtering.
-- {user_filter}: Dynamically inserted WHERE clause for user filtering (e.g., "AND USER_NAME = 'selected_user'").
+- {start_date}: For date range filtering (expects ISO 8601 format or similar string convertible by TRY_TO_TIMESTAMP_NTZ).
+- {user_filter}: Dynamically inserted WHERE clause for user filtering (e.g., "AND USER_NAME = 'selected_user_name'").
+  If no user is selected, this placeholder will be replaced by "AND 1=1" to keep the WHERE clause valid.
 """
 
 USER_360_QUERIES = {
     # --- Core Metrics (KPIs) ---
     "total_queries_run": {
         "query": """
-            SELECT COUNT(*) AS metric_value
-            FROM snowflake.account_usage.query_history
-            WHERE start_time >= '{start_date}'
+            SELECT
+                COUNT(*) AS METRIC_VALUE
+            FROM
+                snowflake.account_usage.query_history
+            WHERE
+                start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
                 AND user_name IS NOT NULL
                 {user_filter}
                 AND query_type NOT IN ('DESCRIBE', 'SHOW', 'USE')
-                AND execution_status IN ('SUCCESS', 'FAIL')
+                AND execution_status IN ('SUCCESS', 'FAIL');
         """,
         "label": "Total Queries Run",
         "description": "Total number of non-meta queries (successful or failed) in the period.",
@@ -27,22 +31,27 @@ USER_360_QUERIES = {
     "total_users_defined": {
         "query": """
             SELECT
-                COUNT(*) AS metric_value
-            FROM snowflake.account_usage.users
-            WHERE deleted_on IS NULL
+                COUNT(*) AS METRIC_VALUE
+            FROM
+                snowflake.account_usage.users
+            WHERE
+                deleted_on IS NULL;
         """,
         "label": "Total Users Defined",
         "description": "Total number of active user accounts defined in Snowflake.",
         "format": "number",
-        "apply_object_filter": False # This is a global metric
+        "apply_object_filter": False # This is a global metric, user filter doesn't apply
     },
     "total_active_users": {
         "query": """
-            SELECT COUNT(DISTINCT user_name) AS metric_value
-            FROM snowflake.account_usage.query_history
-            WHERE start_time >= '{start_date}'
-            AND user_name IS NOT NULL
-            {user_filter}
+            SELECT
+                COUNT(DISTINCT user_name) AS METRIC_VALUE
+            FROM
+                snowflake.account_usage.query_history
+            WHERE
+                start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND user_name IS NOT NULL
+                {user_filter};
         """,
         "label": "Total Active Users",
         "description": "Count of distinct users who executed queries in the selected period.",
@@ -61,20 +70,24 @@ USER_360_QUERIES = {
                 SELECT
                     qh.user_name,
                     ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS user_cost
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    {user_filter}
+                GROUP BY
+                    qh.user_name
             )
-            SELECT COALESCE(ROUND(AVG(user_cost), 2), 0) AS metric_value
-            FROM user_costs
+            SELECT COALESCE(ROUND(AVG(user_cost), 2), 0) AS METRIC_VALUE
+            FROM user_costs;
         """,
-        "label": "Avg Cost Per User",
+        "label": "Avg Cost Per User (USD)",
         "description": "Average estimated USD cost per active user in the period ($3/credit assumed).",
-        "format": "currency", # Custom format for currency
+        "format": "currency",
         "apply_object_filter": True # Applies if a specific user is selected (showing avg for that user), or overall avg.
     },
     "high_cost_users_count": {
@@ -89,16 +102,21 @@ USER_360_QUERIES = {
                 SELECT
                     qh.user_name,
                     SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) AS user_cost
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
-                HAVING SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) > 100 -- Users with > $100 cost
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    {user_filter}
+                GROUP BY
+                    qh.user_name
+                HAVING
+                    SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) > 100 -- Users with > $100 cost
             )
-            SELECT COUNT(*) AS metric_value FROM user_costs
+            SELECT COUNT(*) AS METRIC_VALUE FROM user_costs;
         """,
         "label": "High Cost Users (> $100)",
         "description": "Number of users whose estimated cost exceeds $100 in the period.",
@@ -111,28 +129,33 @@ USER_360_QUERIES = {
                 SELECT
                     COUNT(*) AS total_queries,
                     COUNT(CASE WHEN execution_status = 'FAIL' THEN 1 END) AS failed_queries
-                FROM snowflake.account_usage.query_history
-                WHERE start_time >= '{start_date}'
-                AND user_name IS NOT NULL
-                {user_filter}
+                FROM
+                    snowflake.account_usage.query_history
+                WHERE
+                    start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND user_name IS NOT NULL
+                    {user_filter}
             )
-            SELECT COALESCE(ROUND((failed_queries * 100.0 / NULLIF(total_queries, 0)), 2), 0) AS metric_value
-            FROM query_stats
+            SELECT COALESCE(ROUND((failed_queries * 100.0 / NULLIF(total_queries, 0)), 2), 0) AS METRIC_VALUE
+            FROM query_stats;
         """,
         "label": "Failed Queries %",
         "description": "Percentage of queries that failed in the selected period.",
-        "format": "percentage", # Custom format for percentage
+        "format": "percentage",
         "apply_object_filter": True # Applies to selected user or overall
     },
     "avg_query_duration": {
         "query": """
-            SELECT COALESCE(ROUND(AVG(total_elapsed_time) / 1000.0, 2), 0) AS metric_value
-            FROM snowflake.account_usage.query_history
-            WHERE start_time >= '{start_date}'
-            AND total_elapsed_time > 0
-            AND execution_status = 'SUCCESS'
-            AND user_name IS NOT NULL
-            {user_filter}
+            SELECT
+                COALESCE(ROUND(AVG(total_elapsed_time) / 1000.0, 2), 0) AS METRIC_VALUE
+            FROM
+                snowflake.account_usage.query_history
+            WHERE
+                start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND total_elapsed_time > 0
+                AND execution_status = 'SUCCESS'
+                AND user_name IS NOT NULL
+                {user_filter};
         """,
         "label": "Avg Query Duration (s)",
         "description": "Average duration of successful queries in seconds.",
@@ -151,13 +174,17 @@ USER_360_QUERIES = {
                 SELECT
                     qh.user_name,
                     SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) AS total_user_cost_usd
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.warehouse_name IS NOT NULL
-                AND qh.user_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.warehouse_name IS NOT NULL
+                    AND qh.user_name IS NOT NULL
+                    AND 1=1 -- Ensure a valid WHERE clause even if {user_filter} is empty
+                GROUP BY
+                    qh.user_name
             ),
             cost_statistics AS (
                 SELECT
@@ -170,10 +197,13 @@ USER_360_QUERIES = {
                     urc.user_name,
                     urc.total_user_cost_usd,
                     cs.overall_average_cost
-                FROM user_total_costs urc
-                CROSS JOIN cost_statistics cs
-                WHERE cs.overall_average_cost > 0
-                AND urc.total_user_cost_usd >= 1.5 * cs.overall_average_cost -- 1.5x average cost
+                FROM
+                    user_total_costs urc
+                CROSS JOIN
+                    cost_statistics cs
+                WHERE
+                    cs.overall_average_cost > 0
+                    AND urc.total_user_cost_usd >= 1.5 * cs.overall_average_cost -- 1.5x average cost
             )
             SELECT
                 COALESCE(
@@ -183,12 +213,12 @@ USER_360_QUERIES = {
                         2
                     ),
                     0
-                ) AS metric_value
+                ) AS METRIC_VALUE;
         """,
         "label": "% High Cost Users",
         "description": "Percentage of users whose estimated cost is 1.5x or more than the average user cost.",
         "format": "percentage",
-        "apply_object_filter": False # This is a global metric, user filter doesn't apply
+        "apply_object_filter": False # This is a global metric, user filter doesn't apply directly
     },
 
     # --- Charts & Detailed Tables ---
@@ -202,35 +232,43 @@ USER_360_QUERIES = {
             ),
             user_costs AS (
                 SELECT
-                    qh.user_name AS name,
-                    ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS cost_usd,
-                    'User' AS type
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.warehouse_name IS NOT NULL
-                AND qh.user_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
+                    qh.user_name AS NAME,
+                    ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS COST_USD,
+                    'User' AS TYPE
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.warehouse_name IS NOT NULL
+                    AND qh.user_name IS NOT NULL
+                    AND 1=1 -- Ensure a valid WHERE clause even if {user_filter} is empty
+                GROUP BY
+                    qh.user_name
             ),
             role_costs AS (
                 SELECT
-                    qh.role_name AS name,
-                    ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS cost_usd,
-                    'Role' AS type
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.warehouse_name IS NOT NULL
-                AND qh.role_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.role_name
+                    qh.role_name AS NAME,
+                    ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS COST_USD,
+                    'Role' AS TYPE
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.warehouse_name IS NOT NULL
+                    AND qh.role_name IS NOT NULL
+                    AND 1=1 -- Ensure a valid WHERE clause even if {user_filter} is empty
+                GROUP BY
+                    qh.role_name
             )
-            SELECT name, cost_usd, type FROM user_costs
+            SELECT NAME, COST_USD, TYPE FROM user_costs
             UNION ALL
-            SELECT name, cost_usd, type FROM role_costs
-            ORDER BY cost_usd DESC
-            LIMIT 10
+            SELECT NAME, COST_USD, TYPE FROM role_costs
+            ORDER BY COST_USD DESC
+            LIMIT 10;
         """,
         "label": "Top 10 Users/Roles by Cost",
         "description": "Identifies the top users and roles by estimated USD cost.",
@@ -256,13 +294,17 @@ USER_360_QUERIES = {
                     COUNT(DISTINCT qh.query_id) AS query_count,
                     AVG(qh.total_elapsed_time / 1000.0) AS raw_avg_duration_sec,
                     COUNT(CASE WHEN qh.execution_status = 'FAIL' THEN 1 END) AS failed_queries
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    {user_filter}
+                GROUP BY
+                    qh.user_name
             ),
             user_avg_cost AS (
                 SELECT
@@ -284,11 +326,11 @@ USER_360_QUERIES = {
             FROM user_raw_costs urc
             CROSS JOIN user_avg_cost uac
             ORDER BY urc.raw_total_cost_usd DESC
-            LIMIT 15
+            LIMIT 15;
         """,
         "label": "User Cost & Priority Level",
         "description": "Users ranked by estimated cost, with a priority level indicating deviation from average.",
-        "chart_type": "table", # Best represented as a detailed table
+        "chart_type": "table",
         "apply_object_filter": True # If 'All' is selected, shows global top users by priority
     },
     "query_performance_bottlenecks": {
@@ -303,12 +345,14 @@ USER_360_QUERIES = {
                     execution_status,
                     partitions_scanned,
                     bytes_scanned
-                FROM snowflake.account_usage.query_history
-                WHERE start_time >= '{start_date}'
-                AND user_name IS NOT NULL
-                AND warehouse_name IS NOT NULL -- Ensure warehouse is known
-                AND query_type NOT IN ('DESCRIBE', 'SHOW', 'USE')
-                {user_filter}
+                FROM
+                    snowflake.account_usage.query_history
+                WHERE
+                    start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND user_name IS NOT NULL
+                    AND warehouse_name IS NOT NULL -- Ensure warehouse is known
+                    AND query_type NOT IN ('DESCRIBE', 'SHOW', 'USE')
+                    {user_filter}
             )
             SELECT
                 user_name AS USER_NAME,
@@ -317,7 +361,7 @@ USER_360_QUERIES = {
                 COUNT(*) AS QUERY_COUNT,
                 ROUND(AVG(total_duration_sec), 2) AS AVG_DURATION_SEC,
                 ROUND(MAX(total_duration_sec), 2) AS MAX_DURATION_SEC,
-                COUNT(CASE WHEN total_duration_sec > 300 THEN 1 END) AS SLOW_QUERIES, -- Over 5 minutes
+                COUNT(CASE WHEN total_duration_sec > 300 THEN 1 END) AS SLOW_QUERIES, -- Over 5 minutes (300 seconds)
                 COUNT(CASE WHEN execution_status = 'FAIL' THEN 1 END) AS FAILED_QUERIES,
                 ROUND((COUNT(CASE WHEN total_duration_sec > 300 THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0)), 2) AS SLOW_QUERY_PERCENTAGE,
                 CASE
@@ -336,7 +380,7 @@ USER_360_QUERIES = {
             GROUP BY user_name, warehouse_name, query_type
             HAVING COUNT(*) > 5 -- Only show groups with meaningful activity
             ORDER BY SLOW_QUERIES DESC, AVG_DURATION_SEC DESC
-            LIMIT 20
+            LIMIT 20;
         """,
         "label": "Query Performance Bottlenecks & Actions",
         "description": "Identifies common query performance issues by user/warehouse/query type and suggests actions.",
@@ -355,15 +399,20 @@ USER_360_QUERIES = {
                 SELECT
                     qh.user_name,
                     ROUND(SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0), 2) AS total_cost_usd
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
-                ORDER BY total_cost_usd DESC
-                LIMIT 10 -- Focus on top N users for heatmap if 'All' is selected
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    {user_filter}
+                GROUP BY
+                    qh.user_name
+                ORDER BY
+                    total_cost_usd DESC
+                LIMIT 10 -- Focus on top N users for heatmap if 'All' is selected, or the selected user
             ),
             hourly_usage AS (
                 SELECT
@@ -371,12 +420,15 @@ USER_360_QUERIES = {
                     EXTRACT(HOUR FROM qh.start_time) AS hour_of_day,
                     COUNT(*) AS query_count,
                     ROUND(AVG(qh.total_elapsed_time / 1000.0), 2) AS avg_duration
-                FROM snowflake.account_usage.query_history qh
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.user_name IN (SELECT user_name FROM cost_ranked_users) -- Filter by top users or specific user
-                {user_filter}
-                GROUP BY qh.user_name, EXTRACT(HOUR FROM qh.start_time)
+                FROM
+                    snowflake.account_usage.query_history qh
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.user_name IN (SELECT user_name FROM cost_ranked_users) -- Filter by top users or specific user
+                    {user_filter}
+                GROUP BY
+                    qh.user_name, EXTRACT(HOUR FROM qh.start_time)
             )
             SELECT
                 user_name AS USER_NAME,
@@ -391,7 +443,7 @@ USER_360_QUERIES = {
                 END AS TIME_CATEGORY
             FROM hourly_usage
             GROUP BY user_name, hour_of_day
-            ORDER BY user_name, hour_of_day
+            ORDER BY user_name, hour_of_day;
         """,
         "label": "User Query Activity by Hour",
         "description": "Heatmap showing query activity volume by hour of day for top/selected users, highlighting peak usage times.",
@@ -415,14 +467,19 @@ USER_360_QUERIES = {
                 SELECT
                     qh.user_name,
                     SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) AS total_cost_usd
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                {user_filter}
-                GROUP BY qh.user_name
-                ORDER BY total_cost_usd DESC
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    {user_filter}
+                GROUP BY
+                    qh.user_name
+                ORDER BY
+                    total_cost_usd DESC
                 LIMIT 10
             ),
             optimization_analysis AS (
@@ -435,14 +492,18 @@ USER_360_QUERIES = {
                     COUNT(CASE WHEN COALESCE(qh.bytes_scanned, 0) > 1000000000 THEN 1 END) AS high_scan_queries, -- Over 1 GB
                     SUM(qh.total_elapsed_time / 1000.0 / 3600.0 * wr.credits_per_hour * 3.0) AS total_cost_usd,
                     AVG(qh.total_elapsed_time / 1000.0) AS avg_duration
-                FROM snowflake.account_usage.query_history qh
-                JOIN warehouse_rates wr ON qh.warehouse_size = wr.size
-                WHERE qh.start_time >= '{start_date}'
-                AND qh.user_name IS NOT NULL
-                AND qh.warehouse_name IS NOT NULL
-                AND qh.user_name IN (SELECT user_name FROM cost_ranked_users) -- Ensure it's for relevant users
-                {user_filter}
-                GROUP BY qh.user_name, qh.warehouse_name
+                FROM
+                    snowflake.account_usage.query_history qh
+                JOIN
+                    warehouse_rates wr ON qh.warehouse_size = wr.size
+                WHERE
+                    qh.start_time >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                    AND qh.user_name IS NOT NULL
+                    AND qh.warehouse_name IS NOT NULL
+                    AND qh.user_name IN (SELECT user_name FROM cost_ranked_users) -- Ensure it's for relevant users
+                    {user_filter}
+                GROUP BY
+                    qh.user_name, qh.warehouse_name
             )
             SELECT
                 user_name AS USER_NAME,
@@ -473,7 +534,7 @@ USER_360_QUERIES = {
                 END AS RECOMMENDED_ACTION
             FROM optimization_analysis
             WHERE total_queries > 10 -- Only show warehouses/users with significant activity
-            ORDER BY TOTAL_COST_USD DESC, LONG_QUERY_PERCENTAGE DESC
+            ORDER BY TOTAL_COST_USD DESC, LONG_QUERY_PERCENTAGE DESC;
         """,
         "label": "Optimization Opportunities & Recommendations",
         "description": "Identifies key areas for cost and performance optimization based on user and warehouse usage patterns.",
