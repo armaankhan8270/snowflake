@@ -53,7 +53,7 @@ def render_user_360_dashboard():
     metrics = metric_renderer_instance.render_multiple(
         metric_configs, USER_360_QUERIES, filters
     )
-    common_ui.render_metric_grid(metrics, columns=4) # Display metrics in 4 columns
+    common_ui.render_metric_grid(metrics) # Display metrics in 4 columns
 
 
     st.markdown("---") # Visual separator
@@ -82,7 +82,7 @@ def render_user_360_dashboard():
     charts = chart_renderer_instance.render_multiple(
         chart_configs, USER_360_QUERIES, filters
     )
-    common_ui.render_chart_grid(charts, columns=2) # Display charts in 2 columns
+    common_ui.render_chart_grid(charts) # Display charts in 2 columns
 
     # Optional: Debugging information (can be commented out in production)
     # with st.expander("Debug Filters"):
