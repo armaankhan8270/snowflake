@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Import dashboard pages
-from pages.user_360_dashboard import render_user_360_dashboard
+from pages.user_360_dashboard_new import render_user_360_dashboard
 from pages.roles_360_dashboard import render_roles_360_dashboard
 # Add other dashboard imports here as you create them, e.g.:
 # from pages.warehouse_360_dashboard import render_warehouse_360_dashboard
