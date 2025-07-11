@@ -5,3 +5,8 @@
 *.toml
 secrets.toml
 ./streamlit
+**/streamlit/
+secrets.toml
+
+.streamlit/
+.streamlit/secrets.toml
