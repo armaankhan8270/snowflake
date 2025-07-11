@@ -1,4 +1,5 @@
-# components/common_ui.py - PROPOSED MODIFICATIONS
+# components/common_ui.py - Comprehensive Fix to ensure filters is always a Dict
+
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,43 +9,106 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
-class CommonUI:
-    """
-    Provides common UI components and utilities for the Snowflake Analytics Dashboard.
-    Ensures a consistent, elegant, and user-friendly design.
-    """
 
-    def render_page_header(self, title: str, description: str, icon: str = "✨"):
+class CommonUI:
+    def render_info_message(self, title: str, message: str):
+        with st.info(title):
+            st.write(message)
+
+    def render_warning_message(self, title: str, message: str):
+        with st.warning(title):
+            st.write(message)
+
+    def render_error_message(self, title: str, message: str):
+        with st.error(title):
+            st.write(message)
+
+    def render_page_header(self, title: str, description: str, icon: str = "📊"):
+        st.markdown(f"## {icon} {title}")
+        st.markdown(description)
+        st.markdown("---")
+
+    def render_metric_grid(self, metrics: List[Dict[str, Any]]):
         """
-        Renders a sleek and informative page header with an icon.
+        Renders a grid of metric cards.
 
         Args:
-            title (str): The main title of the page.
-            description (str): A brief description of the dashboard's purpose.
-            icon (str): An emoji icon to display next to the title.
+            metrics (List[Dict[str, Any]]): A list of dictionaries, where each dict
+                                             contains 'label', 'value', 'delta' (optional),
+                                             'description' (optional), and 'error' (optional).
         """
-        st.markdown(
-            f"""
-            <div style="
-                display: flex;
-                align-items: center;
-                gap: 15px;
-                padding: 20px;
-                border-bottom: 2px solid #e0e0e0;
-                margin-bottom: 30px;
-                background-color: #f9f9f9;
-                border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            ">
-                <span style="font-size: 3rem;">{icon}</span>
-                <div>
-                    <h1 style="margin: 0; padding: 0; font-size: 2.5rem; color: #333;">{title}</h1>
-                    <p style="margin: 0; padding: 0; color: #666; font-size: 1.1rem;">{description}</p>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if not metrics:
+            self.render_info_message(
+                "No Metrics Available", "No metrics were provided to display."
+            )
+            return
+
+        cols = st.columns(len(metrics))
+        for i, metric in enumerate(metrics):
+            with cols[i]:
+                with st.container(border=True):
+                    # Check for 'error' key first
+                    if "error" in metric:
+                        self.render_error_message(
+                            f"Error Loading {metric.get('label', 'Metric')}",
+                            metric["error"],
+                        )
+                    else:
+                        st.subheader(metric.get("label", "N/A"))
+                        st.metric(
+                            label="Value",
+                            value=metric.get("value", "N/A"),
+                            delta=metric.get("delta"),
+                        )
+                        if metric.get("description"):
+                            st.caption(metric["description"])
+
+    def render_chart_grid(self, charts: List[Dict[str, Any]]):
+        """
+        Renders a grid of charts with optional data tables.
+
+        Args:
+            charts (List[Dict[str, Any]]): A list of dictionaries, where each dict
+                                            contains 'figure', 'data', 'label',
+                                            'description', 'show_table_toggle', and 'error'.
+        """
+        if not charts:
+            self.render_info_message(
+                "No Charts Available", "No charts were provided to display."
+            )
+            return
+
+        # Distribute charts evenly, up to 2 per row
+        num_charts = len(charts)
+        for i in range(0, num_charts, 2):
+            cols = st.columns(min(2, num_charts - i))  # Ensure no more than 2 columns
+            for j in range(min(2, num_charts - i)):
+                chart = charts[i + j]
+                with cols[j]:
+                    with st.container(border=True):
+                        if "error" in chart:
+                            self.render_error_message(
+                                f"Error Loading {chart.get('label', 'Chart')}",
+                                chart["error"],
+                            )
+                        else:
+                            st.subheader(chart.get("label", "Chart"))
+                            if chart.get("description"):
+                                st.caption(chart["description"])
+
+                            # Render the chart
+                            st.plotly_chart(chart["figure"], use_container_width=True)
+
+                            # Optional: Toggle for data table
+                            if (
+                                chart.get("show_table_toggle", False)
+                                and not chart["data"].empty
+                            ):
+                                if st.toggle(
+                                    f"Show data for {chart['label']}",
+                                    key=f"toggle_data_{chart['label'].replace(' ', '_')}",
+                                ):
+                                    st.dataframe(chart["data"])
 
     def render_filters(
         self,
@@ -63,12 +127,15 @@ class CommonUI:
 
         Returns:
             Dict[str, Any]: A dictionary containing the selected filter values.
+                            Always returns a dictionary, even on error, with default values.
         """
-        filters = {} # Initialize filters dictionary right at the start
+        filters: Dict[str, Any] = {}  # Ensure filters is always initialized as a Dict
 
         try:
             st.markdown("### 🔍 Dashboard Filters")
-            st.markdown("Easily refine your data by selecting specific time ranges or objects.")
+            st.markdown(
+                "Easily refine your data by selecting specific time ranges or objects."
+            )
 
             with st.container(border=True):
                 col1, col2 = st.columns([1, 1])
@@ -86,19 +153,23 @@ class CommonUI:
                         "Last 1 Year": "1_year",
                         "Custom Range": "custom",
                     }
-                    
-                    # Find the default index for date filter
-                    default_date_index = list(date_filter_options.values()).index(default_date_filter) \
-                        if default_date_filter in list(date_filter_options.values()) else 1 # Default to 7 days if not found
+
+                    default_date_index = (
+                        list(date_filter_options.values()).index(default_date_filter)
+                        if default_date_filter in list(date_filter_options.values())
+                        else 1
+                    )
 
                     selected_date_filter_label = st.selectbox(
                         "Select a preset date range or define a custom one:",
                         options=list(date_filter_options.keys()),
                         index=default_date_index,
                         key="date_range_selector",
-                        help="Choose a predefined period or set exact start/end dates for your analysis."
+                        help="Choose a predefined period or set exact start/end dates for your analysis.",
                     )
-                    filters["date_filter"] = date_filter_options[selected_date_filter_label]
+                    filters["date_filter"] = date_filter_options[
+                        selected_date_filter_label
+                    ]
 
                     custom_start_date: Optional[datetime.date] = None
                     custom_end_date: Optional[datetime.date] = None
@@ -108,46 +179,57 @@ class CommonUI:
                         default_custom_start = current_end_date - timedelta(days=7)
 
                         # Initialize custom date values in session state only if they don't exist
-                        if 'custom_start_date_val' not in st.session_state:
-                            st.session_state['custom_start_date_val'] = default_custom_start
-                        if 'custom_end_date_val' not in st.session_state:
-                            st.session_state['custom_end_date_val'] = current_end_date
+                        if "custom_start_date_val" not in st.session_state:
+                            st.session_state["custom_start_date_val"] = (
+                                default_custom_start
+                            )
+                        if "custom_end_date_val" not in st.session_state:
+                            st.session_state["custom_end_date_val"] = current_end_date
 
                         custom_date_col1, custom_date_col2 = st.columns(2)
                         with custom_date_col1:
                             custom_start_date = st.date_input(
                                 "Start date",
-                                value=st.session_state['custom_start_date_val'],
+                                value=st.session_state["custom_start_date_val"],
                                 key="custom_start_date",
-                                help="Select the beginning date for your custom range."
+                                help="Select the beginning date for your custom range.",
                             )
                         with custom_date_col2:
                             custom_end_date = st.date_input(
                                 "End date",
-                                value=st.session_state['custom_end_date_val'],
+                                value=st.session_state["custom_end_date_val"],
                                 key="custom_end_date",
-                                help="Select the end date for your custom range. Must be after start date."
+                                help="Select the end date for your custom range. Must be after start date.",
                             )
-                        
-                        st.session_state['custom_start_date_val'] = custom_start_date
-                        st.session_state['custom_end_date_val'] = custom_end_date
 
-                        if custom_start_date and custom_end_date and custom_start_date > custom_end_date:
+                        # Crucially, update session state with the *returned* values from date_input
+                        st.session_state["custom_start_date_val"] = custom_start_date
+                        st.session_state["custom_end_date_val"] = custom_end_date
+
+                        if (
+                            custom_start_date
+                            and custom_end_date
+                            and custom_start_date > custom_end_date
+                        ):
                             self.render_warning_message(
-                                "Invalid Date Range", "Start date cannot be after end date. Please adjust."
+                                "Invalid Date Range",
+                                "Start date cannot be after end date. Please adjust.",
                             )
-                            # Set valid defaults for downstream, even if UI shows warning
-                            filters["custom_start"] = current_end_date - timedelta(days=7)
+                            filters["custom_start"] = current_end_date - timedelta(
+                                days=7
+                            )
                             filters["custom_end"] = current_end_date
                         else:
                             filters["custom_start"] = custom_start_date
                             filters["custom_end"] = custom_end_date
                     else:
-                        if 'custom_start_date_val' in st.session_state:
-                            del st.session_state['custom_start_date_val']
-                        if 'custom_end_date_val' in st.session_state:
-                            del st.session_state['custom_end_date_val']
-
+                        # Clear custom date session state keys when not in custom mode
+                        # This avoids carrying over custom dates when switching to preset ranges
+                        # Only delete if they exist to prevent KeyError
+                        if "custom_start_date_val" in st.session_state:
+                            del st.session_state["custom_start_date_val"]
+                        if "custom_end_date_val" in st.session_state:
+                            del st.session_state["custom_end_date_val"]
 
                 with col2:
                     # --- Object Filter ---
@@ -163,211 +245,104 @@ class CommonUI:
                         default_object_type = "all"
 
                     default_object_label = next(
-                        (label for label, val in object_type_options.items() if val == default_object_type),
-                        "All Objects"
+                        (
+                            label
+                            for label, val in object_type_options.items()
+                            if val == default_object_type
+                        ),
+                        "All Objects",
                     )
-                    
+
                     selected_object_type_label = st.selectbox(
                         "Filter by a specific object type:",
                         options=list(object_type_options.keys()),
-                        index=list(object_type_options.keys()).index(default_object_label),
+                        index=list(object_type_options.keys()).index(
+                            default_object_label
+                        ),
                         key="object_type_selector",
-                        help="Select a type (e.g., User, Warehouse) to focus your analysis on specific entities."
+                        help="Select a type (e.g., User, Warehouse) to focus your analysis on specific entities.",
                     )
-                    filters["object_type"] = object_type_options[selected_object_type_label]
+                    filters["object_type"] = object_type_options[
+                        selected_object_type_label
+                    ]
 
-                    filters["object_value"] = "All"
+                    # Initialize object_value here based on object_type
+                    filters["object_value"] = (
+                        "All"  # Default for 'all' or when no specific object is selected
+                    )
 
                     if filters["object_type"] != "all":
                         search_term = st.text_input(
                             f"Search for a specific {filters['object_type']}:",
                             key=f"search_input_{filters['object_type']}",
                             placeholder=f"Type to search {filters['object_type']}...",
-                            help=f"Begin typing to filter the dropdown list for a specific {filters['object_type']}."
+                            help=f"Begin typing to filter the dropdown list for a specific {filters['object_type']}.",
                         ).strip()
 
                         object_values = query_executor_instance.get_object_values(
                             filters["object_type"], search_term
                         )
-                        
+
                         if "All" not in object_values:
                             object_values.insert(0, "All")
-                        
-                        session_state_key = f"object_value_{filters['object_type']}_selector"
+
+                        session_state_key = (
+                            f"object_value_{filters['object_type']}_selector"
+                        )
 
                         # Ensure session state for the specific object_value selector is initialized/valid
-                        if session_state_key not in st.session_state or \
-                           st.session_state[session_state_key] not in object_values:
+                        if (
+                            session_state_key not in st.session_state
+                            or st.session_state[session_state_key] not in object_values
+                        ):
                             st.session_state[session_state_key] = "All"
-                        
-                        default_index_for_selectbox = object_values.index(st.session_state[session_state_key])
+
+                        default_index_for_selectbox = object_values.index(
+                            st.session_state[session_state_key]
+                        )
 
                         selected_object_value = st.selectbox(
                             f"Select {filters['object_type']}:",
                             options=object_values,
                             index=default_index_for_selectbox,
                             key=session_state_key,
-                            help=f"Select 'All' to view aggregated data, or choose a specific {filters['object_type']}."
+                            help=f"Select 'All' to view aggregated data, or choose a specific {filters['object_type']}.",
                         )
-                        
+
                         filters["object_value"] = selected_object_value
-                    else:
-                        filters["object_value"] = "All" # Explicitly set to 'All' if 'All Objects' is selected
+                    # No else needed here; filters["object_value"] is already "All" by default or set above.
 
             # Get date strings from query_executor.get_date_range()
             # This must happen after filters['date_filter'] and custom_start/end are set
-            filters["start_date_str"], filters["end_date_str"] = query_executor_instance.get_date_range(
-                filters["date_filter"],
-                filters.get("custom_start"), # Use .get() defensively here as well
-                filters.get("custom_end")
+            # Ensure filters.get() is used for custom_start/end as they might not always be in filters
+            filters["start_date_str"], filters["end_date_str"] = (
+                query_executor_instance.get_date_range(
+                    filters.get(
+                        "date_filter", default_date_filter
+                    ),  # Use .get() defensively here too
+                    filters.get("custom_start"),
+                    filters.get("custom_end"),
+                )
             )
 
-            return filters # Ensure filters dictionary is always returned
-            
+            return filters  # Ensure filters dictionary is always returned in the success path
+
         except Exception as e:
             logger.error(f"Error rendering filters in common_ui: {e}", exc_info=True)
             # IMPORTANT: Always return a dictionary even if an error occurs
             # This prevents the 'NoneType' error in downstream components
+            # Return reasonable default filters
             return {
                 "date_filter": default_date_filter,
-                "start_date_str": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                "start_date_str": (datetime.now() - timedelta(days=7)).strftime(
+                    "%Y-%m-%d"
+                ),
                 "end_date_str": datetime.now().strftime("%Y-%m-%d"),
                 "object_type": default_object_type,
                 "object_value": "All",
-                "error_rendering_filters": f"Failed to render filters: {e}" # Add an error flag
+                "error_rendering_filters": f"An error occurred while setting up filters: {e}",
             }
 
-    
-    
-    
-    
-    
-    
-    def render_metric_grid(self, metrics: List[Dict[str, Any]], columns: int = 3):
-        """
-        Renders metrics in a responsive grid layout using Streamlit columns.
-        Enhanced styling for a cleaner look.
-
-        Args:
-            metrics (List[Dict[str, Any]]): A list of metric dictionaries,
-                                            each ideally containing 'label', 'value', 'delta', 'description', 'error'.
-            columns (int): Number of columns in the grid.
-        """
-        if not metrics:
-            self.render_info_message("No Metrics Available", "No metric data to display for the selected filters.")
-            return
-
-        st.markdown(f"### 📊 Key Performance Indicators")
-        st.markdown("At-a-glance overview of critical metrics related to your selection.")
-
-        # Create columns for the grid
-        metric_cols = st.columns(columns)
-
-        for i, metric_data in enumerate(metrics):
-            with metric_cols[i % columns]:
-                if "error" in metric_data:
-                    self.render_error_message(
-                        metric_data.get("label", "Metric Error"),
-                        metric_data["error"]
-                    )
-                else:
-                    label = metric_data.get("label", "N/A")
-                    value = metric_data.get("value", "N/A")
-                    delta = metric_data.get("delta")
-                    description = metric_data.get("description", "")
-
-                    st.markdown(
-                        f"""
-                        <div style="
-                            padding: 15px 20px;
-                            border-radius: 8px;
-                            background-color: #ffffff;
-                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                            border-left: 5px solid #4CAF50; /* Green accent for good health */
-                            margin-bottom: 15px;
-                            transition: transform 0.2s ease-in-out;
-                        ">
-                            <small style="color: #555; font-weight: bold; text-transform: uppercase;">{label}</small>
-                            <h2 style="margin: 5px 0 10px 0; color: #333; font-size: 2.2rem;">{value}</h2>
-                            {f'<p style="color: #28a745; font-size: 0.9rem; margin: 0;">Δ {delta}</p>' if delta else '<p style="color: #999; font-size: 0.9rem; margin: 0;">No delta available</p>'}
-                            <p style="color: #888; font-size: 0.85rem; margin-top: 10px;">{description}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-    def render_chart_grid(self, charts: List[Dict[str, Any]], columns: int = 2):
-        """
-        Renders charts in a responsive grid layout, with options to toggle data table view.
-
-        Args:
-            charts (List[Dict[str, Any]]): A list of chart dictionaries,
-                                           each ideally containing 'figure', 'data', 'label', 'description', 'error', 'show_table_toggle'.
-            columns (int): Number of columns in the grid.
-        """
-        if not charts:
-            self.render_info_message("No Charts Available", "No chart data to display for the selected filters.")
-            return
-
-        st.markdown(f"### 📈 Visual Analytics")
-        st.markdown("Interactive charts to visualize trends, distributions, and patterns.")
-
-        chart_cols = st.columns(columns)
-
-        for i, chart_data in enumerate(charts):
-            with chart_cols[i % columns]:
-                with st.container(border=True): # Use a container for each chart
-                    if "error" in chart_data:
-                        self.render_error_message(
-                            chart_data.get("label", "Chart Error"),
-                            chart_data["error"]
-                        )
-                    else:
-                        label = chart_data.get("label", "Chart")
-                        description = chart_data.get("description", "")
-                        figure = chart_data.get("figure")
-                        data_df = chart_data.get("data")
-                        show_table_toggle = chart_data.get("show_table_toggle", False)
-
-                        st.markdown(f"**{label}**")
-                        if description:
-                            st.caption(description)
-
-                        if figure:
-                            st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
-                        else:
-                            self.render_warning_message(label, "Chart figure could not be generated.")
-
-                        if show_table_toggle and data_df is not None and not data_df.empty:
-                            # Use st.checkbox or st.toggle for a cleaner look
-                            if st.button(
-                                "Show Data Table",
-                                key=f"toggle_table_{label.replace(' ', '_').replace('/', '')}_{i}"
-                            ):
-                                with st.expander(f"Data for '{label}'", expanded=True):
-                                    st.dataframe(data_df, use_container_width=True)
-                        elif show_table_toggle and (data_df is None or data_df.empty):
-                             st.info("No data available for table view.")
-
-
-    def render_info_message(self, title: str, message: str):
-        """Renders an informative message in a distinct Streamlit info box."""
-        st.info(f"**{title}**\n\n{message}", icon="ℹ️")
-
-    def render_warning_message(self, title: str, message: str):
-        """Renders a warning message in a distinct Streamlit warning box."""
-        st.warning(f"**{title}**\n\n{message}", icon="⚠️")
-
-    def render_error_message(self, title: str, message: str):
-        """Renders an error message in a distinct Streamlit error box."""
-        st.error(f"**{title}**\n\n{message}", icon="❌")
-
-    def render_loading_spinner(self, text: str):
-        """
-        Renders a loading spinner. Use with 'with' statement.
-        Example: `with common_ui.render_loading_spinner("Loading data..."):`
-        """
-        return st.spinner(text)
 
 # Instantiate the CommonUI class for global access
 common_ui = CommonUI()
