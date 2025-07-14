@@ -388,12 +388,12 @@ USER_360_QUERIES = {
                 AND qh.query_type NOT IN ('DESCRIBE', 'SHOW', 'USE')
                 {user_filter}
             ORDER BY
-                ESTIMATED_COST_USD DESC
+                ESTIMATED_COST_USD DESC 
             LIMIT 50; -- Top 50 most expensive queries for detailed investigation and action
         """,
         "label": "Top 50 Most Impactful Queries for Optimization",
         "description": "Lists the top N queries by estimated cost, providing detailed performance metrics, optimization categories, and highly specific actions for FinOps engineers to take. This is your primary drill-down table.",
         "chart_type": "table",
         "apply_object_filter": True
-    }
+    } 
 }
