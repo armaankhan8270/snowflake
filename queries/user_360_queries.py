@@ -1,251 +1,335 @@
-# queries/user_360_queries.py
-"""
-SQL query definitions for the User 360 Dashboard.
-These queries use placeholders for dynamic filtering:
-- {start_date}, {end_date}: For date range filtering.
-- {object_filter}: For filtering by the selected user (if apply_object_filter is True).
-"""
+# query_store.py
 
 USER_360_QUERIES = {
-    "total_queries_by_user": {
+    # ----------------------------------------------------------------------
+    # METRICS
+    # ----------------------------------------------------------------------
+
+    "total_queries_run_by_user": {
         "query": """
-            SELECT COUNT(*) AS TOTAL_QUERIES
+            SELECT
+                COUNT(QUERY_ID) AS TOTAL_QUERIES
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
         """,
-        "label": "Total Queries by User",
-        "description": "Total number of queries executed by the selected user.",
+        "label": "Total Queries Run",
+        "description": "Total number of queries executed by the selected object within the period.",
         "format": "number",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
+        "apply_object_filter": True # Apply object filter (e.g., USER_NAME)
     },
-    "total_execution_time_by_user": {
+    "total_execution_time_min_by_user": {
         "query": """
-            SELECT SUM(EXECUTION_TIME) AS TOTAL_EXECUTION_TIME_MS
+            SELECT
+                COALESCE(SUM(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0)), 0) / (1000 * 60) AS TOTAL_EXECUTION_TIME_MIN
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
         """,
         "label": "Total Execution Time",
-        "description": "Total query execution time for the selected user in milliseconds.",
-        "format": "duration",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
+        "description": "Total time spent executing queries (in minutes) by the selected object. Proxy for compute cost.",
+        "format": "number", # Will be formatted as a general number
+        "delta_query_key": "total_execution_time_min_by_user", # Delta for this metric
+        "apply_object_filter": True
     },
-    "avg_execution_time_by_user": {
+    "avg_execution_time_sec_per_query_by_user": {
         "query": """
-            SELECT AVG(EXECUTION_TIME) AS AVG_EXECUTION_TIME_MS
+            SELECT
+                COALESCE(AVG(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0)), 0) / 1000 AS AVG_EXECUTION_TIME_SEC
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND EXECUTION_STATUS = 'SUCCESS' -- Only count successful queries for average
+                {object_filter}
         """,
-        "label": "Avg Execution Time",
-        "description": "Average query execution time for the selected user.",
-        "format": "duration",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
-    },
-    "data_scanned_by_user": {
-        "query": """
-            SELECT SUM(BYTES_SCANNED) / POW(1024, 3) AS DATA_SCANNED_GB
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
-        """,
-        "label": "Data Scanned (GB)",
-        "description": "Total data scanned by the selected user in gigabytes.",
+        "label": "Avg. Query Time",
+        "description": "Average execution time per successful query (in seconds) by the selected object.",
         "format": "number",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
+        "apply_object_filter": True
     },
-    "failed_queries_by_user_metric": { # Renamed for clarity vs chart
+    "total_data_scanned_tb_by_user": {
         "query": """
-            SELECT COUNT(*) AS FAILED_QUERIES
+            SELECT
+                COALESCE(SUM(TRY_TO_NUMBER(BYTES_SCANNED, 38, 0)), 0) / POW(1024, 4) AS TOTAL_DATA_SCANNED_TB
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND ERROR_MESSAGE IS NOT NULL
-              {object_filter}
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND BYTES_SCANNED > 0 -- Only count queries that actually scanned data
+                {object_filter}
+        """,
+        "label": "Total Data Scanned",
+        "description": "Total volume of data scanned by queries (in Terabytes) by the selected object. A major cost driver.",
+        "format": "number", # Can be formatted as TB in UI if needed, for now just a number
+        "delta_query_key": "total_data_scanned_tb_by_user",
+        "apply_object_filter": True
+    },
+    "total_compilation_time_sec_by_user": {
+        "query": """
+            SELECT
+                COALESCE(SUM(TRY_TO_NUMBER(COMPILATION_TIME, 38, 0)), 0) / 1000 AS TOTAL_COMPILATION_TIME_SEC
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
+        """,
+        "label": "Total Compile Time",
+        "description": "Total time spent compiling queries (in seconds) by the selected object. High values might indicate complex or unoptimized queries.",
+        "format": "number",
+        "apply_object_filter": True
+    },
+    "failed_query_count_by_user": {
+        "query": """
+            SELECT
+                COUNT(QUERY_ID) AS FAILED_QUERIES
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND EXECUTION_STATUS = 'FAIL'
+                {object_filter}
         """,
         "label": "Failed Queries",
-        "description": "Number of failed queries for the selected user.",
+        "description": "Total number of failed queries executed by the selected object. Frequent failures indicate issues.",
         "format": "number",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
-    },
-    "long_running_queries_by_user_metric": { # Renamed for clarity vs chart
-        "query": """
-            SELECT COUNT(*) AS LONG_RUNNING_QUERIES
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND EXECUTION_TIME > 1000 -- Over 1 second
-              {object_filter}
-        """,
-        "label": "Long-Running Queries",
-        "description": "Number of queries exceeding 1 second execution time for the selected user.",
-        "format": "number",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
+        "apply_object_filter": True
     },
     "distinct_warehouses_used_by_user": {
         "query": """
-            SELECT COUNT(DISTINCT WAREHOUSE_NAME) AS DISTINCT_WAREHOUSES
+            SELECT
+                COUNT(DISTINCT WAREHOUSE_NAME) AS DISTINCT_WAREHOUSES
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND WAREHOUSE_NAME IS NOT NULL
-              {object_filter}
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND WAREHOUSE_NAME IS NOT NULL
+                {object_filter}
         """,
         "label": "Distinct Warehouses Used",
-        "description": "Number of distinct warehouses used by the selected user.",
+        "description": "Number of unique warehouses the selected object has run queries on. Helps understand resource spread.",
         "format": "number",
-        "apply_object_filter": True # Will apply USER_NAME filter if selected
+        "apply_object_filter": True
     },
-    # --- Charts ---
-    "top_users_by_data_scanned": {
+    "longest_running_query_min_by_user": {
         "query": """
-            SELECT USER_NAME,
-                   SUM(BYTES_SCANNED) / POW(1024, 3) AS DATA_SCANNED_GB
+            SELECT
+                COALESCE(MAX(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0)), 0) / (1000 * 60) AS LONGEST_RUNNING_QUERY_MIN
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-            GROUP BY USER_NAME
-            ORDER BY DATA_SCANNED_GB DESC
-            LIMIT 10
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND EXECUTION_STATUS = 'SUCCESS'
+                {object_filter}
         """,
-        "label": "Top 10 Users by Data Scanned (All Users)",
-        "description": "Identifies the top 10 users consuming the most data (in GB) across all users.",
-        "chart_type": "bar",
-        "x_col": "USER_NAME",
-        "y_col": "DATA_SCANNED_GB",
-        "hover_data": ["DATA_SCANNED_GB"],
-        "apply_object_filter": False # This chart should *always* show top users globally.
+        "label": "Longest Query (Min)",
+        "description": "The duration (in minutes) of the single longest running successful query by the selected object. Identifies outliers.",
+        "format": "number",
+        "apply_object_filter": True
     },
-    "top_users_by_execution_time": {
+
+    # ----------------------------------------------------------------------
+    # CHARTS
+    # ----------------------------------------------------------------------
+
+    "daily_total_execution_time_by_user_chart": {
         "query": """
-            SELECT USER_NAME,
-                   SUM(EXECUTION_TIME) AS TOTAL_EXECUTION_TIME_MS
+            SELECT
+                TO_DATE(START_TIME) AS QUERY_DATE,
+                COALESCE(SUM(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0)), 0) / (1000 * 60) AS TOTAL_EXECUTION_TIME_MIN
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-            GROUP BY USER_NAME
-            ORDER BY TOTAL_EXECUTION_TIME_MS DESC
-            LIMIT 10
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 1
         """,
-        "label": "Top 10 Users by Execution Time (All Users)",
-        "description": "Identifies the top 10 users with the highest total query execution time (in milliseconds) across all users.",
-        "chart_type": "bar",
-        "x_col": "USER_NAME",
-        "y_col": "TOTAL_EXECUTION_TIME_MS",
-        "hover_data": ["TOTAL_EXECUTION_TIME_MS"],
-        "apply_object_filter": False # This chart should *always* show top users globally.
-    },
-    "top_users_by_query_count": {
-        "query": """
-            SELECT USER_NAME,
-                   COUNT(*) AS QUERY_COUNT
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-            GROUP BY USER_NAME
-            ORDER BY QUERY_COUNT DESC
-            LIMIT 10
-        """,
-        "label": "Top 10 Users by Query Count (All Users)",
-        "description": "Identifies the top 10 users with the highest number of queries executed across all users.",
-        "chart_type": "bar",
-        "x_col": "USER_NAME",
-        "y_col": "QUERY_COUNT",
-        "hover_data": ["QUERY_COUNT"],
-        "apply_object_filter": False # This chart should *always* show top users globally.
-    },
-    "execution_time_vs_query_count_scatter": { # Renamed key for clarity
-        "query": """
-            SELECT USER_NAME,
-                   COUNT(*) AS QUERY_COUNT,
-                   SUM(EXECUTION_TIME) AS TOTAL_EXECUTION_TIME_MS
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
-            GROUP BY USER_NAME
-        """,
-        "label": "Execution Time vs Query Count (Selected User)",
-        "description": "A scatter plot showing the relationship between total query count and total execution time for the selected user. If 'All Users' is selected, this will plot for all users.",
-        "chart_type": "scatter",
-        "x_col": "QUERY_COUNT",
-        "y_col": "TOTAL_EXECUTION_TIME_MS",
-        "hover_data": ["USER_NAME", "QUERY_COUNT", "TOTAL_EXECUTION_TIME_MS"],
-        "apply_object_filter": True # This chart should apply the user filter if present.
-    },
-    "daily_query_trend_by_user": { # Renamed key for clarity
-        "query": """
-            SELECT TO_DATE(START_TIME) AS QUERY_DATE,
-                   USER_NAME,
-                   COUNT(*) AS TOTAL_QUERIES
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              {object_filter}
-            GROUP BY QUERY_DATE, USER_NAME
-            ORDER BY QUERY_DATE ASC
-        """,
-        "label": "Daily Query Trend (Selected User)",
-        "description": "Shows the daily trend of query execution for the selected user. If 'All Users' is selected, it will show trends for all users (potentially aggregated).",
+        "label": "Daily Execution Time (Min)",
+        "description": "Daily trend of total query execution time by the selected object.",
         "chart_type": "line",
         "x_col": "QUERY_DATE",
-        "y_col": "TOTAL_QUERIES",
-        "color_col": "USER_NAME", # Useful if object_filter is 'all'
-        "hover_data": ["TOTAL_QUERIES", "USER_NAME"],
-        "apply_object_filter": True # This chart should apply the user filter if present.
+        "y_col": "TOTAL_EXECUTION_TIME_MIN",
+        "hover_data": ["TOTAL_EXECUTION_TIME_MIN"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
     },
-    "query_failures_by_user_chart": { # Renamed for clarity vs metric
+    "queries_by_execution_status_chart": {
         "query": """
-            SELECT USER_NAME,
-                   COUNT(*) AS FAILED_QUERIES
+            SELECT
+                EXECUTION_STATUS,
+                COUNT(QUERY_ID) AS QUERY_COUNT
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND ERROR_MESSAGE IS NOT NULL
-              {object_filter}
-            GROUP BY USER_NAME
-            ORDER BY FAILED_QUERIES DESC
-            LIMIT 10
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 2 DESC
         """,
-        "label": "Top Users by Query Failures",
-        "description": "Bar chart showing users with the highest number of failed queries.",
-        "chart_type": "bar",
-        "x_col": "USER_NAME",
-        "y_col": "FAILED_QUERIES",
-        "hover_data": ["FAILED_QUERIES"],
-        "apply_object_filter": True # Should filter if a specific user is selected, otherwise show top global.
-    },
-    "long_running_queries_by_user_chart": { # Renamed for clarity vs metric
-        "query": """
-            SELECT USER_NAME,
-                   COUNT(*) AS LONG_RUNNING_QUERIES
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND EXECUTION_TIME > 1000 -- Over 1 second
-              {object_filter}
-            GROUP BY USER_NAME
-            ORDER BY LONG_RUNNING_QUERIES DESC
-            LIMIT 10
-        """,
-        "label": "Top Users by Long-Running Queries",
-        "description": "Bar chart showing users with the highest number of queries exceeding 1 second execution time.",
-        "chart_type": "bar",
-        "x_col": "USER_NAME",
-        "y_col": "LONG_RUNNING_QUERIES",
-        "hover_data": ["LONG_RUNNING_QUERIES"],
-        "apply_object_filter": True # Should filter if a specific user is selected, otherwise show top global.
-    },
-    "user_warehouse_heatmap": {
-        "query": """
-            SELECT USER_NAME,
-                   WAREHOUSE_NAME,
-                   COUNT(*) AS QUERY_COUNT
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE START_TIME >= '{start_date}' AND START_TIME <= '{end_date}'
-              AND WAREHOUSE_NAME IS NOT NULL
-              {object_filter}
-            GROUP BY USER_NAME, WAREHOUSE_NAME
-        """,
-        "label": "User vs Warehouse Usage Heatmap (Selected User)",
-        "description": "Heatmap showing query count distribution for the selected user across different warehouses. If 'All Users' is selected, this will show for all users.",
-        "chart_type": "heatmap",
-        "x_col": "WAREHOUSE_NAME",
-        "y_col": "USER_NAME",
-        "value_col": "QUERY_COUNT",
-        "color_continuous_scale": "YlGnBu", # Changed to a common heatmap color scale
+        "label": "Queries by Status",
+        "description": "Distribution of queries by execution status (Success, Fail, etc.) for the selected object.",
+        "chart_type": "pie",
+        "x_col": "EXECUTION_STATUS", # Used as names for pie
+        "y_col": "QUERY_COUNT", # Used as values for pie
         "hover_data": ["QUERY_COUNT"],
-        "apply_object_filter": True # Should filter if a specific user is selected, otherwise show global usage.
+        "show_table_toggle": True,
+        "apply_object_filter": True
     },
+    "top_10_most_expensive_queries_by_user_chart": {
+        "query": """
+            SELECT
+                QUERY_ID,
+                SUBSTRING(QUERY_TEXT, 1, 100) AS QUERY_TEXT_SNIPPET, -- Take first 100 chars
+                COALESCE(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0), 0) / (1000 * 60) AS EXECUTION_TIME_MIN,
+                WAREHOUSE_NAME
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND EXECUTION_STATUS = 'SUCCESS'
+                {object_filter}
+            ORDER BY EXECUTION_TIME_MIN DESC
+            LIMIT 10
+        """,
+        "label": "Top 10 Expensive Queries (Min)",
+        "description": "Top 10 longest running successful queries by the selected object. Review these for optimization.",
+        "chart_type": "bar",
+        "x_col": "QUERY_TEXT_SNIPPET",
+        "y_col": "EXECUTION_TIME_MIN",
+        "hover_data": ["QUERY_ID", "WAREHOUSE_NAME"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
+    },
+    "execution_time_by_warehouse_chart": {
+        "query": """
+            SELECT
+                WAREHOUSE_NAME,
+                COALESCE(SUM(TRY_TO_NUMBER(EXECUTION_TIME, 38, 0)), 0) / (1000 * 60) AS TOTAL_EXECUTION_TIME_MIN
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND WAREHOUSE_NAME IS NOT NULL
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 2 DESC
+        """,
+        "label": "Execution Time by Warehouse",
+        "description": "Total query execution time by the selected object, broken down by warehouse. Helps identify primary cost centers.",
+        "chart_type": "bar",
+        "x_col": "WAREHOUSE_NAME",
+        "y_col": "TOTAL_EXECUTION_TIME_MIN",
+        "hover_data": ["TOTAL_EXECUTION_TIME_MIN"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
+    },
+    "daily_data_scanned_tb_by_user_chart": {
+        "query": """
+            SELECT
+                TO_DATE(START_TIME) AS QUERY_DATE,
+                COALESCE(SUM(TRY_TO_NUMBER(BYTES_SCANNED, 38, 0)), 0) / POW(1024, 4) AS TOTAL_DATA_SCANNED_TB
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND BYTES_SCANNED > 0
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 1
+        """,
+        "label": "Daily Data Scanned (TB)",
+        "description": "Daily trend of data scanned by queries executed by the selected object.",
+        "chart_type": "line",
+        "x_col": "QUERY_DATE",
+        "y_col": "TOTAL_DATA_SCANNED_TB",
+        "hover_data": ["TOTAL_DATA_SCANNED_TB"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
+    },
+    "query_type_distribution_by_user_chart": {
+        "query": """
+            SELECT
+                QUERY_TYPE,
+                COUNT(QUERY_ID) AS QUERY_COUNT
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                AND QUERY_TYPE IS NOT NULL
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 2 DESC
+        """,
+        "label": "Query Type Distribution",
+        "description": "Breakdown of query types (e.g., SELECT, INSERT) executed by the selected object. Provides insight into usage patterns.",
+        "chart_type": "pie",
+        "x_col": "QUERY_TYPE",
+        "y_col": "QUERY_COUNT",
+        "hover_data": ["QUERY_COUNT"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
+    },
+    "daily_compile_time_by_user_chart": {
+        "query": """
+            SELECT
+                TO_DATE(START_TIME) AS QUERY_DATE,
+                COALESCE(SUM(TRY_TO_NUMBER(COMPILATION_TIME, 38, 0)), 0) / 1000 AS TOTAL_COMPILATION_TIME_SEC
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 1
+        """,
+        "label": "Daily Compile Time (Sec)",
+        "description": "Daily trend of total query compilation time by the selected object. High spikes might suggest unoptimized queries or schema issues.",
+        "chart_type": "line",
+        "x_col": "QUERY_DATE",
+        "y_col": "TOTAL_COMPILATION_TIME_SEC",
+        "hover_data": ["TOTAL_COMPILATION_TIME_SEC"],
+        "show_table_toggle": True,
+        "apply_object_filter": True
+    },
+    "daily_queueing_blocked_time_by_user_chart": {
+        "query": """
+            SELECT
+                TO_DATE(START_TIME) AS QUERY_DATE,
+                COALESCE(AVG(TRY_TO_NUMBER(QUEUED_OVERLOAD_TIME, 38, 0)), 0) / 1000 AS AVG_QUEUED_OVERLOAD_TIME_SEC,
+                COALESCE(AVG(TRY_TO_NUMBER(QUEUED_REPAIR_TIME, 38, 0)), 0) / 1000 AS AVG_QUEUED_REPAIR_TIME_SEC,
+                COALESCE(AVG(TRY_TO_NUMBER(QUEUED_PROVISIONING_TIME, 38, 0)), 0) / 1000 AS AVG_QUEUED_PROVISIONING_TIME_SEC,
+                COALESCE(AVG(TRY_TO_NUMBER(BLOCKED_TIME, 38, 0)), 0) / 1000 AS AVG_BLOCKED_TIME_SEC
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE
+                START_TIME >= TRY_TO_TIMESTAMP_NTZ('{start_date}')
+                AND START_TIME <= TRY_TO_TIMESTAMP_NTZ('{end_date} 23:59:59')
+                {object_filter}
+            GROUP BY 1
+            ORDER BY 1
+        """,
+        "label": "Daily Queueing/Blocked Time (Sec)",
+        "description": "Daily average time queries spent queueing or blocked for the selected object. High values indicate warehouse contention or sizing issues.",
+        "chart_type": "line",
+        "x_col": "QUERY_DATE",
+        "y_col": ["AVG_QUEUED_OVERLOAD_TIME_SEC", "AVG_BLOCKED_TIME_SEC"], # Can plot multiple lines
+        "hover_data": ["AVG_QUEUED_OVERLOAD_TIME_SEC", "AVG_QUEUED_REPAIR_TIME_SEC", "AVG_QUEUED_PROVISIONING_TIME_SEC", "AVG_BLOCKED_TIME_SEC"],
+        "show_table_toggle": True,
+        "apply_object_filter": True,
+        "toggle_options": { # Example of how you might add toggle options
+            "overload_only": {
+                "label": "Overload Queue",
+                "y_col": "AVG_QUEUED_OVERLOAD_TIME_SEC",
+            },
+            "blocked_only": {
+                "label": "Blocked Time",
+                "y_col": "AVG_BLOCKED_TIME_SEC",
+            }
+        }
+    }
 }

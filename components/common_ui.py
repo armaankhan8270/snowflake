@@ -1,11 +1,16 @@
 # components/common_ui.py
 
 import logging
-from datetime import date, datetime, timedelta  # Explicitly import date for clarity
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import streamlit as st
+
+# We need to type hint these instances, but import them within the class methods
+# to avoid circular dependencies if they also import CommonUI
+# from components.metric_renderer import MetricRenderer
+# from components.chart_renderer import ChartRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -140,15 +145,22 @@ class CommonUI:
                                 )
 
                                 # Optional: Toggle for data table
+                                # Ensure 'data' key exists and is a DataFrame and not empty
                                 if (
                                     chart.get("show_table_toggle", False)
+                                    and isinstance(chart.get("data"), pd.DataFrame)
                                     and not chart["data"].empty
                                 ):
+                                    # Generate a unique key for the toggle
+                                    toggle_key_safe_label = chart['label'].replace(' ', '_').replace('.', '').replace('-', '_').lower()
                                     if st.toggle(
                                         f"Show data for {chart['label']}",
-                                        key=f"toggle_data_{chart['label'].replace(' ', '_').replace('.', '').replace('-', '_')}",
+                                        key=f"toggle_data_{toggle_key_safe_label}_{i}_{j}", # Unique key per toggle
                                     ):
                                         st.dataframe(chart["data"])
+                                elif chart.get("show_table_toggle", False) and isinstance(chart.get("data"), pd.DataFrame) and chart["data"].empty:
+                                    st.info(f"No data to display in table for {chart['label']}.")
+
 
     # --- New Modular Filter Rendering Methods ---
 
@@ -293,7 +305,7 @@ class CommonUI:
         return object_type_options[selected_object_type_label]
 
     def _render_object_value_search_and_select(
-        self, query_executor_instance: Any, object_type: str
+        self, query_executor_instance: Any, object_type: str, filters: Dict[str, Any] # Added filters
     ) -> str:
         """
         Renders the search bar and selectbox for specific object values.
@@ -311,9 +323,15 @@ class CommonUI:
             help=f"Begin typing to filter the dropdown list for a specific {object_type}.",
         ).strip()
 
+        # Pass current date filters to get_object_values for context-aware filtering
+        date_filters_for_objects = {
+            "start_date_str": filters.get("start_date_str"),
+            "end_date_str": filters.get("end_date_str")
+        }
+
         # Fetch object values using the query executor
         object_values = query_executor_instance.get_object_values(
-            object_type, search_term
+            object_type, search_term, date_filters=date_filters_for_objects # Pass date_filters
         )
 
         if "All" not in object_values:
@@ -322,6 +340,7 @@ class CommonUI:
         session_state_key = f"object_value_{object_type}_selector"
 
         # Ensure session state for the specific object_value selector is initialized/valid
+        # or if the previously selected value is no longer in the options
         if (
             session_state_key not in st.session_state
             or st.session_state[session_state_key] not in object_values
@@ -383,6 +402,17 @@ class CommonUI:
                     filters["custom_start"] = custom_start_date
                     filters["custom_end"] = custom_end_date
 
+                # IMPORTANT: Get date strings from query_executor.get_date_range() immediately
+                # after date filter selection, as _render_object_value_search_and_select
+                # now requires them.
+                filters["start_date_str"], filters["end_date_str"] = (
+                    query_executor_instance.get_date_range(
+                        filters.get("date_filter", default_date_filter),
+                        filters.get("custom_start"),
+                        filters.get("custom_end"),
+                    )
+                )
+
                 with col2:
                     # Leverage the new _render_object_type_filter method
                     selected_object_type = self._render_object_type_filter(
@@ -391,21 +421,11 @@ class CommonUI:
                     filters["object_type"] = selected_object_type
 
                     # Leverage the new _render_object_value_search_and_select method
+                    # Pass the 'filters' dictionary which now contains 'start_date_str'/'end_date_str'
                     selected_object_value = self._render_object_value_search_and_select(
-                        query_executor_instance, filters["object_type"]
+                        query_executor_instance, filters["object_type"], filters
                     )
                     filters["object_value"] = selected_object_value
-
-            # Get date strings from query_executor.get_date_range()
-            # This must happen after filters['date_filter'] and custom_start/end are set
-            # Use .get() defensively as custom_start/end might not always be present if not in custom mode
-            filters["start_date_str"], filters["end_date_str"] = (
-                query_executor_instance.get_date_range(
-                    filters.get("date_filter", default_date_filter),
-                    filters.get("custom_start"),
-                    filters.get("custom_end"),
-                )
-            )
 
             return filters  # Always return the filters dictionary in the success path
 
@@ -425,6 +445,154 @@ class CommonUI:
                 "error_rendering_filters": f"An error occurred while setting up filters: {e}",
             }
 
+
+    # --- New Helper Methods for simplified Metric/Chart Rendering from keys ---
+
+    def render_single_metric_from_key(
+        self,
+        metric_key: str,
+        query_store: Dict[str, Any],
+        filters: Dict[str, Any],
+        metric_renderer_instance: Any, # Type hint 'MetricRenderer' when importing it
+        label: Optional[str] = None,
+        description: Optional[str] = None,
+        format_type: Optional[str] = None,
+        delta_query_key: Optional[str] = None,
+        metrics_per_row: int = 4,
+    ):
+        """
+        Renders a single metric by its key from the query store.
+        Automatically retrieves label, description, and format from query_store if not overridden.
+
+        Args:
+            metric_key (str): The key of the metric in the query_store.
+            query_store (Dict[str, Any]): The dictionary containing all query configurations.
+            filters (Dict[str, Any]): The current filter values from the UI.
+            metric_renderer_instance (MetricRenderer): An instance of MetricRenderer.
+            label (Optional[str]): Override label for the metric.
+            description (Optional[str]): Override description for the metric.
+            format_type (Optional[str]): Override format type (number, percentage, currency, duration).
+            delta_query_key (Optional[str]): Override delta query key.
+            metrics_per_row (int): Number of metrics per row for the grid layout.
+        """
+        metric_config = {
+            "query_key": metric_key,
+            "label": label,
+            "description": description,
+            "format_type": format_type,
+            "delta_query_key": delta_query_key,
+        }
+        
+        # metric_renderer_instance.render_multiple expects a list of configs
+        metrics_to_render = metric_renderer_instance.render_multiple(
+            [metric_config], query_store, filters
+        )
+        self.render_metric_grid(metrics_to_render, metrics_per_row=metrics_per_row)
+
+
+    def render_metrics_from_keys(
+        self,
+        metric_configs: List[Union[str, Dict[str, Any]]], # Can be string key or dict config
+        query_store: Dict[str, Any],
+        filters: Dict[str, Any],
+        metric_renderer_instance: Any, # Type hint 'MetricRenderer'
+        metrics_per_row: int = 4,
+    ):
+        """
+        Renders multiple metrics based on a list of keys or config dictionaries.
+
+        Args:
+            metric_configs (List[Union[str, Dict[str, Any]]]): A list of metric keys (strings)
+                                                                or dictionaries specifying overrides.
+            query_store (Dict[str, Any]): The dictionary containing all query configurations.
+            filters (Dict[str, Any]): The current filter values from the UI.
+            metric_renderer_instance (MetricRenderer): An instance of MetricRenderer.
+            metrics_per_row (int): Number of metrics per row for the grid layout.
+        """
+        metrics_to_render = metric_renderer_instance.render_multiple(
+            metric_configs, query_store, filters
+        )
+        self.render_metric_grid(metrics_to_render, metrics_per_row=metrics_per_row)
+
+
+    def render_single_chart_from_key(
+        self,
+        chart_key: str,
+        query_store: Dict[str, Any],
+        filters: Dict[str, Any],
+        chart_renderer_instance: Any, # Type hint 'ChartRenderer'
+        chart_type: Optional[str] = None,
+        label: Optional[str] = None,
+        x_col: Optional[str] = None,
+        y_col: Optional[str] = None,
+        value_col: Optional[str] = None,
+        color_col: Optional[str] = None,
+        hover_data: Optional[list] = None,
+        show_table_toggle: Optional[bool] = None, # Allow override for this
+        charts_per_row: int = 2,
+    ):
+        """
+        Renders a single chart by its key from the query store.
+        Automatically retrieves chart type, label, description, etc., from query_store if not overridden.
+
+        Args:
+            chart_key (str): The key of the chart in the query_store.
+            query_store (Dict[str, Any]): The dictionary containing all query configurations.
+            filters (Dict[str, Any]): The current filter values from the UI.
+            chart_renderer_instance (ChartRenderer): An instance of ChartRenderer.
+            chart_type (Optional[str]): Override chart type.
+            label (Optional[str]): Override label for the chart.
+            x_col (Optional[str]): Override x-axis column.
+            y_col (Optional[str]): Override y-axis column.
+            value_col (Optional[str]): Override value column (for e.g., treemap, heatmap).
+            color_col (Optional[str]): Override color column.
+            hover_data (Optional[list]): Override hover data columns.
+            show_table_toggle (Optional[bool]): Override default show_table_toggle behavior.
+            charts_per_row (int): Number of charts per row for the grid layout.
+        """
+        chart_config = {
+            "query_key": chart_key,
+            "chart_type": chart_type,
+            "label": label,
+            "x_col": x_col,
+            "y_col": y_col,
+            "value_col": value_col,
+            "color_col": color_col,
+            "hover_data": hover_data,
+            # Only set if provided, otherwise let chart_renderer default
+            **({"show_table_toggle": show_table_toggle} if show_table_toggle is not None else {}),
+        }
+
+        # chart_renderer_instance.render_multiple expects a list of configs
+        charts_to_render = chart_renderer_instance.render_multiple(
+            [chart_config], query_store, filters
+        )
+        self.render_chart_grid(charts_to_render, charts_per_row=charts_per_row)
+
+
+    def render_charts_from_keys(
+        self,
+        chart_configs: List[Union[str, Dict[str, Any]]], # Can be string key or dict config
+        query_store: Dict[str, Any],
+        filters: Dict[str, Any],
+        chart_renderer_instance: Any, # Type hint 'ChartRenderer'
+        charts_per_row: int = 2,
+    ):
+        """
+        Renders multiple charts based on a list of keys or config dictionaries.
+
+        Args:
+            chart_configs (List[Union[str, Dict[str, Any]]]): A list of chart keys (strings)
+                                                               or dictionaries specifying overrides.
+            query_store (Dict[str, Any]): The dictionary containing all query configurations.
+            filters (Dict[str, Any]): The current filter values from the UI.
+            chart_renderer_instance (ChartRenderer): An instance of ChartRenderer.
+            charts_per_row (int): Number of charts per row for the grid layout.
+        """
+        charts_to_render = chart_renderer_instance.render_multiple(
+            chart_configs, query_store, filters
+        )
+        self.render_chart_grid(charts_to_render, charts_per_row=charts_per_row)
 
 # Instantiate the CommonUI class for global access
 common_ui = CommonUI()
