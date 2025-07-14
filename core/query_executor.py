@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from snowflake.snowpark import Session
+from snowflake.snowpark import Session #ignore
 from snowflake.snowpark.exceptions import SnowparkSessionException
 
 # Configure logging
@@ -136,31 +136,45 @@ class QueryExecutor:
             logger.error(f"Error executing query '{query_label}': {e}\nSQL: {formatted_query}")
             # Do not st.error here, let the renderer handle the display to the user
             return pd.DataFrame()
-
+        
     @st.cache_data(ttl=3600)
-    def get_object_values(_self, object_type: str, search_term: str = "") -> list:
+    def get_object_values(_self, object_type: str, search_term: str = "", date_filters: Optional[dict] = None) -> list:
         """
         Fetches distinct values for a given object type from Snowflake usage views.
 
         Args:
             object_type (str): The type of object (e.g., 'user', 'warehouse', 'role', 'database').
             search_term (str): Optional search term to filter results.
+            date_filters (dict): Dictionary containing 'start_date' and 'end_date' for time-based filtering.
 
         Returns:
             list: A list of distinct object values, including 'All'.
         """
         session = _self.get_session()
 
+        # Default date range for filtering object values if not provided
+        # This ensures get_object_values doesn't scan ALL history if common_ui isn't ready with dates yet
+        default_start_date_str = (datetime.now().date() - timedelta(days=90)).strftime("%Y-%m-%d")
+        effective_start_date = date_filters.get("start_date") if date_filters and date_filters.get("start_date") else default_start_date_str
+
+        # Note: We're using start_time directly from ACCOUNT_USAGE, which is a TIMESTAMP_LTZ
+        # TRY_TO_TIMESTAMP_NTZ('{effective_start_date}') allows flexibility.
+        # It's better to use an explicit date part if you only care about the date.
+        date_filter_clause = f" AND START_TIME >= TRY_TO_TIMESTAMP_NTZ('{effective_start_date}')"
+
+
         object_queries = {
-            "user": """
+            "user": f"""
                 SELECT DISTINCT USER_NAME
                 FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
                 WHERE USER_NAME IS NOT NULL
+                {date_filter_clause}
             """,
-            "warehouse": """
+            "warehouse": f"""
                 SELECT DISTINCT WAREHOUSE_NAME
                 FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
                 WHERE WAREHOUSE_NAME IS NOT NULL
+                {date_filter_clause}
             """,
             "role": """
                 SELECT DISTINCT NAME AS ROLE_NAME
@@ -180,12 +194,10 @@ class QueryExecutor:
             )
             return ["All"]
 
-        # Base query to get all distinct values
         query = object_queries[object_type]
 
         # Apply search term filter if provided
         if search_term:
-            # Determine the correct column name for filtering based on object_type
             column_name_map = {
                 "user": "USER_NAME",
                 "warehouse": "WAREHOUSE_NAME",
@@ -194,8 +206,6 @@ class QueryExecutor:
             }
             filter_column = column_name_map.get(object_type)
             if filter_column:
-                # Sanitize search_term to prevent SQL injection (basic, for user-provided string)
-                # For production, consider using Snowpark's parameter binding fully or more robust sanitization.
                 sanitized_search_term = search_term.replace("'", "''")
                 query += f" AND UPPER({filter_column}) LIKE UPPER('%{sanitized_search_term}%')"
             else:
@@ -204,16 +214,19 @@ class QueryExecutor:
         query += " ORDER BY 1 LIMIT 100" # Limit to 100 results for performance
 
         try:
+            logger.info(f"Fetching object values for '{object_type}' with query:\n{query}")
             df = session.sql(query).to_pandas()
             if df.empty:
                 logger.info(f"No {object_type} values found for search term '{search_term}'.")
                 return ["All"]
 
-            column = df.columns[0] # Get the first column name for values
+            column = df.columns[0]
             values = df[column].dropna().astype(str).tolist()
             return ["All"] + values
         except Exception as e:
             logger.error(f"Error fetching {object_type} values: {e}")
+            # Do not use st.error here, as it might appear on every sidebar selection.
+            # Instead, return ["All"] and let the user select/try again.
             return ["All"]
 
     def get_date_range(
