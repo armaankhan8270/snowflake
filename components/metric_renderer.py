@@ -46,8 +46,9 @@ class MetricRenderer:
             delta_query_key (Optional[str]): Override key for the delta metric query.
 
         Returns:
-            Dict[str, Any]: A dictionary containing the metric's 'label', 'value', 'delta',
-                            'description', and 'format'. Includes an 'error' key if an issue occurs.
+            Dict[str, Any]: A dictionary containing the metric's 'label', 'value' (formatted),
+                            'raw_value', 'delta' (formatted), 'raw_delta', 'description', and 'format'.
+                            Includes an 'error' key if an issue occurs.
         """
         # Create a single-item list for render_multiple
         metric_configs = [{
@@ -82,7 +83,8 @@ class MetricRenderer:
 
         Returns:
             List[Dict[str, Any]]: A list of dictionaries, where each dict represents a metric
-                                  with its 'label', 'value', 'delta', 'description', and 'format'.
+                                  with its 'label', 'value' (formatted), 'raw_value',
+                                  'delta' (formatted), 'raw_delta', 'description', and 'format'.
                                   'error' key included if an issue occurs. The order matches input configs.
         """
         all_query_jobs = [] # List to hold all (current and delta) query jobs for parallel execution
@@ -138,8 +140,9 @@ class MetricRenderer:
                 current_job_index += 1
             else:
                 # If no delta key or delta query not found, ensure delta data is marked as None
-                job_to_metric_map[current_job_index] = (metric_config_index, "no_delta") # Placeholder for no delta query
-                current_job_index += 1
+                # No actual job is added, but we need to track that no delta was requested/found.
+                # The _process_results below will handle this by checking for delta_df emptiness.
+                pass # No need for a "no_delta" placeholder job anymore, just rely on delta_df being empty/missing
 
 
         # --- Execute all queries in parallel ---
@@ -159,9 +162,6 @@ class MetricRenderer:
                 continue
 
             metric_cfg_idx, job_type = job_to_metric_map[job_idx]
-
-            if job_type == "no_delta": # This slot was a placeholder for no delta query, skip
-                continue
 
             if "error" in result:
                 if job_type == "current":
@@ -213,15 +213,20 @@ class MetricRenderer:
                 }
                 continue # Skip to next metric if current value has an error
 
-            value = self._get_metric_value(current_df)
-            delta = self._get_delta_value(value, delta_df, delta_error)
+            raw_value = self._get_metric_value(current_df) # Get raw value
+            value = self._format_value(raw_value, format_type) # Format for display
+
+            raw_delta = self._get_delta_value(raw_value, delta_df, delta_error) # Get raw delta
+            delta = self._format_delta(raw_delta, format_type) # Format for display
 
             metrics_results_placeholders[metric_config_index] = {
                 "label": current_label,
-                "value": self._format_value(value, format_type),
-                "delta": self._format_delta(delta, format_type),
+                "value": value,          # Formatted string for display
+                "raw_value": raw_value,  # Raw number for calculations
+                "delta": delta,          # Formatted string for display
+                "raw_delta": raw_delta,  # Raw number for delta calculations
                 "description": description,
-                "format": format_type, # Keep format_type for consistency
+                "format": format_type,
             }
 
         return metrics_results_placeholders
@@ -270,6 +275,7 @@ class MetricRenderer:
             object_type = filters.get("object_type", "all")
             object_value = filters.get("object_value", "").strip()
 
+            # The key change for "All" is here: if object_value is 'All' or empty, don't apply the filter
             if object_type != "all" and object_value and object_value.lower() != "all":
                 col_map = {
                     "user": "USER_NAME",
@@ -315,7 +321,13 @@ class MetricRenderer:
         if not isinstance(current_value, (int, float)) or not isinstance(
             previous_value, (int, float)
         ):
-            return None  # Cannot calculate delta for non-numeric values
+            # If values are strings, attempt conversion if possible for common cases
+            try:
+                current_value = float(current_value) if isinstance(current_value, str) else current_value
+                previous_value = float(previous_value) if isinstance(previous_value, str) else previous_value
+            except ValueError:
+                logger.warning(f"Cannot calculate delta for non-numeric or unconvertible string values: Current={current_value}, Previous={previous_value}")
+                return None  # Cannot calculate delta for non-numeric or unconvertible values
 
         if previous_value == 0:
             return 0.0 if current_value == 0 else float("inf")  # Handle division by zero
@@ -327,17 +339,28 @@ class MetricRenderer:
         """Formats the metric value based on its type."""
         if value is None:
             return "N/A"
+        
+        # Ensure value is numeric for formatting if possible
+        numeric_value = None
+        if isinstance(value, (int, float)):
+            numeric_value = value
+        elif isinstance(value, str):
+            try:
+                numeric_value = float(value) # Try converting string to float
+            except ValueError:
+                pass # If conversion fails, keep as string
+
         if format_type == "number":
-            return f"{value:,.0f}" if isinstance(value, (int, float)) else str(value)
+            return f"{numeric_value:,.0f}" if isinstance(numeric_value, (int, float)) else str(value)
         elif format_type == "percentage":
-            return f"{value:.2f}%" if isinstance(value, (int, float)) else str(value)
+            return f"{numeric_value:.2f}%" if isinstance(numeric_value, (int, float)) else str(value)
         elif format_type == "currency":
-            return f"${value:,.2f}" if isinstance(value, (int, float)) else str(value)
+            return f"${numeric_value:,.2f}" if isinstance(numeric_value, (int, float)) else str(value)
         elif format_type == "duration":
             # Assuming duration in seconds, format as HH:MM:SS or similar
-            if isinstance(value, (int, float)):
+            if isinstance(numeric_value, (int, float)):
                 # Convert seconds to timedelta for formatting
-                td = timedelta(seconds=int(value))
+                td = timedelta(seconds=int(numeric_value))
                 hours, remainder = divmod(td.seconds, 3600)
                 minutes, seconds = divmod(remainder, 60)
                 return f"{hours:02}:{minutes:02}:{seconds:02}"
@@ -352,8 +375,7 @@ class MetricRenderer:
             return None
         if delta == float("inf"):
             return "∞%" # Infinite increase
-        if format_type == "number" and isinstance(delta, (int, float)):
-            # For numbers, delta might be the absolute difference, not percentage
-            # Adjust if your delta calculation is percentage based
-            return f"{delta:,.0f}"
+        
+        # For deltas, we usually want a percentage change indicator
+        # Example: "+15.25%", "-3.10%"
         return f"{delta:+.2f}%" if isinstance(delta, (int, float)) else None
